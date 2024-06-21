@@ -1,108 +1,80 @@
-//Using Express
 const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors')
+const dotenv = require('dotenv');
+const connectDB = require('./config/db');
+const authRoutes = require('./routes/authRoutes');
+const protectedRoutes = require('./routes/protectedRoutes');
+const session = require('express-session');
+const MongoStore = require('connect-mongo'); // Correct import for MongoStore
+const cookieParser = require('cookie-parser');
+const cors = require('cors');
+const helmet = require('helmet');
+const hpp = require('hpp');
+const xss = require('xss-clean');
+const csurf = require('csurf');
+const { notFound, errorHandler } = require('./middlewares/errorHandler');
+const limiter = require('./middlewares/rateLimiter');
 
-//create an instance of express
+dotenv.config();
+connectDB();
 const app = express();
-app.use(express.json())
-app.use(cors())
 
-//Sample in-memory storage for todo items
-// let todos = [];
+// Security middlewares
+app.use(helmet());
+app.use(
+    helmet.contentSecurityPolicy({
+        directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", 'https://apis.google.com'],
+            styleSrc: ["'self'", 'https://fonts.googleapis.com'],
+            fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+            imgSrc: ["'self'", 'data:'],
+            connectSrc: ["'self'"],
+        },
+    })
+);
+app.use(hpp());
+app.use(xss());
 
-// connecting mongodb
-mongoose.connect('mongodb+srv://siraj:2FJ63FMlPnQHHpcT@cluster0.xxdhvm1.mongodb.net/')
-.then(() => {
-    console.log('DB Connected!')
-})
-.catch((err) => {
-    console.log(err)
-})
+app.use(express.json());
+app.use(cors({
+    origin: 'http://localhost:3000',
+    credentials: true,
+}));
 
-//creating schema
-const todoSchema = new mongoose.Schema({
-    title: {
-        required: true,
-        type: String
-    },
-    description: String
-})
+app.use(cookieParser());
 
-//creating model
-const todoModel = mongoose.model('Todo', todoSchema);
+app.use(
+    session({
+        secret: process.env.SESSION_SECRET,
+        resave: false,
+        saveUninitialized: false,
+        store: MongoStore.create({ mongoUrl: process.env.MONGO_URI }), // Corrected MongoStore configuration
+        cookie: {
+            secure: process.env.NODE_ENV === 'production',
+            httpOnly: true,
+             maxAge: 7 * 24 * 60 * 60 * 1000,  // 1 day
+        },
+    })
+);
 
-//Create a new todo item
-app.post('/todos', async (req, res) => {
-    const {title, description} = req.body;
-    // const newTodo = {
-    //     id: todos.length + 1,
-    //     title,
-    //     description
-    // };
-    // todos.push(newTodo);
-    // console.log(todos);
-    try {
-        const newTodo = new todoModel({title, description});
-        await newTodo.save();
-        res.status(201).json(newTodo);
-    } catch (error) {
-        console.log(error)
-        res.status(500).json({message: error.message});
-    }
-   
-
-})
-
-//Get all items
-app.get('/todos', async (req, res) => {
-    try {
-        const todos = await todoModel.find();
-        res.json(todos);
-    } catch (error) {
-        console.log(error)
-        res.status(500).json({message: error.message});
-    }
-})
-
-// Update a todo item
-app.put("/todos/:id", async (req, res) => {
-    try {
-        const {title, description} = req.body;
-        const id = req.params.id;
-        const updatedTodo = await todoModel.findByIdAndUpdate(
-            id,
-            { title , description},
-            { new: true }
-        )
-    
-        if (!updatedTodo) {
-            return res.status(404).json({ message: "Todo not found"})
-        }
-        res.json(updatedTodo)
-    } catch (error) {
-        console.log(error)
-        res.status(500).json({message: error.message});
-    }
+// CSRF protection middleware
+const csrfProtection = csurf({ cookie: true });
+app.use(csrfProtection);
 
 
-})
+// Rate limiter middleware
+app.use('/api/', limiter);
 
-// Delete a todo item
-app.delete('/todos/:id', async (req, res) => {
-    try {
-        const id = req.params.id;
-        await todoModel.findByIdAndDelete(id);
-        res.status(204).end();    
-    } catch (error) {
-        console.log(error)
-        res.status(500).json({message: error.message});
-    }
-   
-})
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/protected', protectedRoutes);
 
-//Start the server
-const port = 8000;
-app.listen(port, () => {
-    console.log("Server is listening to port "+port);
-})
+app.get('/api/csrf-token', (req, res) => {
+    res.json({ csrfToken: req.csrfToken() });
+});
+
+app.use(notFound);
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
